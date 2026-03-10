@@ -1,28 +1,46 @@
 package main
 
 import (
-	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
+
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
+	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
 	"github.com/sirupsen/logrus"
 )
 
-type ConnetDB struct {
-	DB_id   int
-	DB_addr string
-	// 数据库有定义默认值NULL
-	DB_userAgent sql.NullString
-	DB_visit_url sql.NullString
+// 图片内存结构
+type CacheItem struct {
+	Data []byte
+	Size int
+}
 
-	VisitTime time.Time
+// 划出图片内存
+var (
+	Cache      *lru.Cache[string, CacheItem]
+	CacheBytes int
+	CacheLock  sync.Mutex
+)
+
+var (
+	Search_Location_IP_Memory    []byte
+	Search_Location_IP_Memory_mu sync.RWMutex
+)
+
+var (
+	Rules_Cache     = make([]Attack_Rules, 0, 100) // 内存数据
+	Attack_Rules_mu sync.RWMutex                   // 读写锁
+)
+
+type Group_Attack_Struct struct {
+	Attack_Level uint8
+	Attack_Type  string
 }
 
 type Visitor_Datas struct {
@@ -36,34 +54,48 @@ type IP_Response struct {
 }
 
 // 统计IP
-var Statistics_IP []string
+// var Statistics_IP []string
 
-// 统计IP_API
-func DataHandler(w http.ResponseWriter, r *http.Request) {
-	// 请求头
-	w.Header().Set("Content-Type", "application/json")
-	// 请求数据库
-	ip_info := connet_DB()
-	// 构建Json
-	resp := IP_Response{
-		Total_Normal_IP: strconv.Itoa(ip_info[0]),
-		Total_Attack_IP: strconv.Itoa(ip_info[1]),
+func IPToRegion_Reading_Cache() {
+	var dbPath string = "./ip2region_v4.xdb"
+	var Error_Info string
+	var err error
+	Search_Location_IP_Memory, err = xdb.LoadContentFromFile(dbPath)
+	if err != nil {
+		fmt.Printf("failed to load content from `%s`: %s\n", dbPath, err)
+		Error_Info = "查询IP地理数据库读取失败" + dbPath + "\n" + err.Error()
+		Logger(Error_Info, "Error")
 	}
-	//Json编码
-	json.NewEncoder(w).Encode(resp)
+
 }
 
-// 定义路由
-func API_Total_IP(API_Server *mux.Router) {
-	API_Server.HandleFunc("/Visitors", DataHandler).Methods("GET")
-
+// IP查询地理位置函数
+func IPToRegion(ip string) string {
+	var Info string
+	searcher, err := xdb.NewWithBuffer(xdb.IPv4, Search_Location_IP_Memory)
+	if err != nil {
+		Info = "查询IP地理信息位置失败" + err.Error()
+		Logger(Info, "Error")
+		logrus.Panic(err)
+	}
+	region, err := searcher.SearchByStr(ip)
+	if err != nil {
+		Info = "查询IP地理位置失败" + err.Error()
+		Logger(Info, "Error")
+		logrus.Panic(err)
+	}
+	// 国外IP 澳大利亚|0|新南威尔士|悉尼|Cloudflare
+	// 国内IP 中国|华东|上海|上海市|电信
+	// 内网IP 0|0|0|内网IP|内网IP
+	// 未知查询 0
+	return region
 }
 
 // 日志函数
 func Logger(Log_Info string, Error_level string) {
 	logger := logrus.New() // 创建日志
 	// 输出日志兼容Docker容器
-	logFile, err := os.OpenFile("/app/run.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0755)
+	logFile, err := os.OpenFile("./run.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0664)
 	if err != nil {
 		logger.Fatal(err)
 		// return "Error"
@@ -84,129 +116,88 @@ func Logger(Log_Info string, Error_level string) {
 	// return "Done"
 }
 
-// 统计正常IP和攻击IP
-func Statistics_IP_DB(visit_Cache []ConnetDB) []int {
-	var group_IP = []int{0, 0}
-	normal_IP := 0            // 正常IP
-	attack_IP := 0            // 攻击IP
-	seen := map[string]bool{} // 判断重复IP函数
-	// db.Exec("DELETE FROM wp_visitor_logs WHERE ip_address = ?", "1.2.3.4") 删除某个IP所有记录
-	for _, records := range visit_Cache {
-		// 检测是否存在此值
-		if records.DB_visit_url.Valid {
-			// 判断是否为重复IP
-			if seen[records.DB_addr] {
-				continue // 跳过本次循环
-			}
-			seen[records.DB_addr] = true
-			// 检测是否有Linux注入攻击 例子:";", "|", "||", "&&", "`", "$(", "<", ">", "%60", "${IFS}"
-			if strings.Contains(records.DB_visit_url.String, "`") || strings.Contains(records.DB_visit_url.String, ";") {
-				attack_IP++
-
-				// 代理访问攻击(http/https)
-			} else if strings.Contains(records.DB_visit_url.String, "/http://") || strings.Contains(records.DB_visit_url.String, "/https://") || strings.Contains(records.DB_visit_url.String, ":443") || strings.Contains(records.DB_visit_url.String, ":80") {
-				attack_IP++
-
-				// 数据库信息获取
-			} else if strings.Contains(records.DB_visit_url.String, "/admin/.env.credentials") || strings.Contains(records.DB_visit_url.String, "/wp-admin/.env.credentials") || strings.Contains(records.DB_visit_url.String, "/config.js") || strings.Contains(records.DB_visit_url.String, "/keys.js") || strings.Contains(records.DB_visit_url.String, "/?author=") {
-				attack_IP++
-
-				// 获取管理者和注册用户
-			} else if strings.Contains(records.DB_visit_url.String, "/wp-json/wp/v2/users") {
-				attack_IP++
-				// 检测攻击
-			} else if strings.Contains(records.DB_visit_url.String, "cdn-cgi") || strings.Contains(records.DB_visit_url.String, "cloudflare") {
-				attack_IP++
-				// 检测登录面板
-			} else if records.DB_visit_url.String == "https://loliconhentai.top/wp-admin" || records.DB_visit_url.String == "https://loliconhentai.top/wp-login.php" || records.DB_visit_url.String == "https://loliconhentai.top/admin" {
-				attack_IP++
-			} else {
-				normal_IP++ // 记入正常IP
-			}
-		}
-	}
-	group_IP[0] = normal_IP
-	group_IP[1] = attack_IP
-	return group_IP
-}
-
-// 清理数据库
-func Clean_DB(db *sql.DB) {
-	// 数据库删除语法: DELETE FROM wp_visitor_logs WHERE visit_time < NOW() - INTERVAL 24 HOUR;
-	// 删除24小时之前的数据,清理访问表
-	db.Exec("DELETE FROM wp_visitor_logs WHERE visit_time < ? ", time.Now().Add(-24*time.Hour))
-}
-
-// // 获取时间戳
-// func Timestamp_DB() time.Time {
-// 	// 获取当前时间
-// 	return time.Now().Add(-24 * time.Hour)
-// }
-
-// 连接数据库函数
-func connet_DB() []int {
-
-	// 容器内连接数据库
-	db, error := sql.Open("mysql", ":@tcp()/?parseTime=true")
-	if error != nil {
-		println(error)
-	}
-	// 不关闭准备建立数据库,复用db函数
-	//	defer db.Close() // 执行完函数才关闭
-	fmt.Println("数据库连接成功！")
-	// 查询数据库
-	rows, err := db.Query("SELECT * FROM wp_visitor_logs WHERE visit_time >= ?", time.Now().Add(-24*time.Hour))
-	if err != nil {
-		println(error)
-	}
-	// 执行完函数关闭数据库连接,防止数据库连接过多爆炸
-	defer rows.Close()
-	// 定义slice,保证存储顺序一致
-	visit_Cache := make([]ConnetDB, 0)
-	Number := 1
-	// Next--如果下一行有数据就true,反之flast
-	for rows.Next() {
-
-		var Data ConnetDB
-
-		err := rows.Scan(
-			&Data.DB_id,
-			&Data.DB_addr,
-			&Data.DB_userAgent,
-			&Data.DB_visit_url,
-			&Data.VisitTime,
-		)
-		// 判断是否有空值
-		if err != nil {
-			logrus.Fatal(err)
-
-		}
-		visit_Cache = append(visit_Cache, Data)
-		Number++
-
-	}
-	Num := strconv.Itoa(Number) // 格式化字符串
-	logrus.Info("已获取24小时的数据库数据" + Num + "条")
-	Logger("已获取24小时的数据库数据"+Num+"条", "Info")
-	// db.Exec("DELETE FROM wp_visitor_logs WHERE ip_address = ?", "1.2.3.4") 删除某个IP所有记录
-	group_IP := Statistics_IP_DB(visit_Cache)
-	Clean_DB(db)
-	logrus.Info("访问IP个数" + strconv.Itoa(group_IP[0]) + "个")
-	Logger("访问IP个数"+strconv.Itoa(group_IP[0])+"个", "Info")
-	logrus.Info("识别出攻击IP个数" + strconv.Itoa(group_IP[1]) + "个")
-	Logger("识别出攻击IP个数"+strconv.Itoa(group_IP[1])+"个", "Info")
-	return group_IP
-}
-
 func main() {
-	// Connet_DB()
-	// 创建API实例
-	API_Server := mux.NewRouter()
-	// 处理API请求
-	API_Total_IP(API_Server)
-	// 定义端口,启动服务
-	error := http.ListenAndServe(":8088", API_Server)
-	if error != nil {
-		fmt.Println(error.Error())
-	}
+	// 创建内存
+	Cache, _ = lru.New[string, CacheItem](50)
+	// 每小时定时清理访问表数据
+	go func() {
+		for {
+			time.Sleep(1 * time.Hour)
+			Clean_DB(Network_DB)
+		}
+	}()
+	// 读取本地IP地理位置查询库
+	Loding_Search_Local_IP := make(chan struct{})
+	go func() {
+		IPToRegion_Reading_Cache()
+		close(Loding_Search_Local_IP)
+	}()
+
+	// 数据库连接堵塞
+	Loding_DB_Connet := make(chan struct{})
+	// 全局数据库连接
+	go func() {
+		Open_Local_DB()
+		Open_Network_DB()
+		close(Loding_DB_Connet)
+		Logger("建立数据库连接成功", "Info")
+	}()
+
+	// 零内存堵塞
+	Loding_DBMemory_Lock := make(chan struct{})
+	// 数据库更新线程
+	go func() {
+		<-Loding_DB_Connet
+
+		// 第一次执行
+		time.Sleep(1 * time.Second)
+		Rading_DB(Network_DB)
+		Rading_Attacker_IP(Network_DB)
+		close(Loding_DBMemory_Lock)
+
+		time.Sleep(10 * time.Second)
+		// 循环执行
+		for {
+			Rading_DB(Network_DB)
+			Rading_Attacker_IP(Network_DB)
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
+	// 更新内存规则线程
+	go func() {
+		<-Loding_DB_Connet
+		for {
+			//写入锁
+			Attack_Rules_mu.Lock()
+			Radding_Attack_Rules(Local_DB)
+			Attack_Rules_mu.Unlock()
+			time.Sleep(10 * time.Minute)
+		}
+	}()
+
+	// API Server线程
+	go func() {
+		<-Loding_Search_Local_IP
+		<-Loding_DBMemory_Lock
+		// 创建API实例
+		API_Server := mux.NewRouter()
+		// 处理API请求
+		API_Total_IP(API_Server)
+		// 定义端口,启动服务
+		error := http.ListenAndServe(":8088", API_Server)
+		if error != nil {
+			fmt.Println(error.Error())
+		}
+	}()
+
+	<-Loding_DBMemory_Lock
+	// 程序关闭时关闭数据库
+	defer func() {
+		Local_DB.Close()
+		Network_DB.Close()
+		os.Exit(0)
+	}()
+	// 堵塞主线程
+	select {}
 }

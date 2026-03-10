@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>站点更新日志</title>
+    <style>
+        /* ====================
+           1. 核心变量 (提取自你的代码)
+           ==================== */
+        :root {
+            /* 亮色模式配置 */
+            --bg-gradient: 
+            radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.8) 0%, transparent 8%),
+            radial-gradient(circle at 80% 10%, rgba(255, 255, 255, 0.6) 0%, transparent 12%),
+            radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.5) 0%, transparent 15%),
+            radial-gradient(circle at 10% 80%, rgba(255, 255, 255, 0.7) 0%, transparent 10%),
+            radial-gradient(circle at 90% 90%, rgba(255, 255, 255, 0.6) 0%, transparent 10%),
+            linear-gradient(135deg, #b9e6f6 0%, #ece5f4 100%); 
+            --glass-bg: rgba(255, 255, 255, 0.4);
+            --glass-border: rgba(255, 255, 255, 0.6);
+            --text-primary: #4a5568;
+            --text-secondary: #718096;
+            --accent-glow: 0 0 8px rgba(255, 255, 255, 0.8);
+            --line-color: rgba(255, 255, 255, 0.5);
+            --dot-color: #fff;
+            --dot-border: #b9e6f6;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                /* 深色模式 - 使用深紫色背景以突出"发光"效果 */
+                --bg-gradient: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
+                --glass-bg: rgba(45, 45, 68, 0.6);
+                --glass-border: rgba(255, 255, 255, 0.1);
+                --text-primary: #efe0fd; /* 提取自你的 glow-color */
+                --text-secondary: #c3bde9;
+                --accent-glow: 0 0 10px rgba(239, 224, 253, 0.5);
+                --line-color: rgba(195, 189, 233, 0.3);
+                --dot-color: #fee4ff;
+                --dot-border: #6c5ce7;
+            }
+        }
+
+        /* ====================
+           2. 基础布局
+           ==================== */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        /* 标题容器 */
+        .header-main {
+            display: flex;
+            align-items: center;      /* 垂直居中 */
+            justify-content: flex-start;   /* 水平居中 */
+            gap: 25px;                /* 图片与文字的间距 */
+            margin-bottom: 20px;
+        }
+
+        /* 标题图片 */
+        .main-logo {
+            width: 80px;              /* 根据需要调整大小 */
+            height: 80px;
+            object-fit: contain;
+            /* filter: drop-shadow(0 0 12px var(--dot-color)); */ 
+        }
+
+        body {
+            font-family: "Microsoft YaHei", -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            color: var(--text-primary);
+            display: flex;
+            justify-content: center;
+            padding: 40px 20px;
+            /* 固定背景，防止滚动时渐变断层 */
+            background-attachment: fixed; 
+            background: var(--bg-gradient);
+            background-size: 200% 200%; /* 放大背景尺寸供位移 */
+            animation: bgMove 20s linear infinite alternate;
+        }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+
+        /* 页面大标题 */
+        .page-header {
+            text-align: center;
+            margin-bottom: 60px;
+            animation: fadeInDown 0.8s ease-out;
+        }
+
+        .page-header h1 {
+            font-size: 2.5rem;
+            letter-spacing: 2px;
+            text-shadow: var(--accent-glow);
+            margin-bottom: 10px;
+        }
+
+        /* ====================
+           3. 时间轴样式
+           ==================== */
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+
+        /* 左侧贯穿线 */
+        .timeline::before {
+        content: '';
+        position: absolute;
+        left: 9px;
+        top: 10px;
+        bottom: 0;
+        width: 2px;
+        background: repeating-linear-gradient(
+            to bottom,
+            var(--line-color),
+            var(--line-color) 4px,
+            transparent 4px,
+            transparent 8px
+        );
+        border-radius: 0;
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 40px;
+            animation: slideInUp 0.6s ease-out forwards;
+            opacity: 0; /* 初始隐藏供动画使用 */
+        }
+
+        /* 延迟动画，形成阶梯感 */
+        .timeline-item:nth-child(1) { animation-delay: 0.1s; }
+        .timeline-item:nth-child(2) { animation-delay: 0.2s; }
+        .timeline-item:nth-child(3) { animation-delay: 0.3s; }
+
+        /* --- 核心：呼吸圆点 --- */
+        .timeline-dot {
+            position: absolute;
+            left: -30px; /* 调整位置到线的一侧 */
+            top: 20px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--dot-color);
+            border: 3px solid var(--dot-border);
+            z-index: 2;
+            box-shadow: var(--accent-glow);
+        }
+
+        /* 呼吸动画类 */
+        .timeline-dot.breathing {
+            animation: breathe 2s ease-in-out infinite alternate;
+        }
+
+        /* 发光滤镜 */
+        .timeline-dot::after {
+            content: '';
+            position: absolute;
+            top: -5px; left: -5px; right: -5px; bottom: -5px;
+            border-radius: 50%;
+            background: inherit;
+            filter: blur(8px);
+            opacity: 0.6;
+            z-index: -1;
+        }
+
+        /* --- 内容卡片 (玻璃拟态) --- */
+        .timeline-content {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px); /* 磨砂效果 */
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.05);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .timeline-content:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px 0 rgba(31, 38, 135, 0.1);
+            background: rgba(255,255,255, 0.1); /* hover时微微增亮 */
+        }
+
+        /* --- 头部区域：日期与标签 --- */
+        .meta-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .date-badge {
+            background: rgba(255, 255, 255, 0.3);
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+            border: 1px solid var(--glass-border);
+        }
+
+        /* --- 标题区域 (支持图片) --- */
+        .card-header {
+            display: flex;
+            align-items: center; /* 垂直居中 */
+            gap: 12px; /* 图片和文字的间距 */
+            margin-bottom: 16px;
+        }
+
+        .header-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px; /* 圆角矩形 */
+            object-fit: cover;
+            border: 1px solid var(--glass-border);
+            box-shadow: var(--accent-glow);
+        }
+
+        .card-title {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin: 0;
+            line-height: 1.2;
+        }
+
+        /* --- 列表内容 --- */
+        .update-list {
+            list-style: none;
+            color: var(--text-secondary);
+        }
+
+        .update-list li {
+            margin-bottom: 8px;
+            position: relative;
+            padding-left: 18px;
+            line-height: 1.6;
+        }
+
+        .update-list li::before {
+            content: '>';
+            position: absolute;
+            left: 0;
+            color: var(--text-primary);
+            font-weight: bold;
+            font-family: monospace;
+        }
+
+        /* ====================
+           4. 动画定义
+           ==================== */
+        @keyframes breathe {
+            0% { transform: scale(0.95); opacity: 0.7; box-shadow: 0 0 5px var(--dot-color); }
+            100% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 15px var(--dot-color); }
+        }
+
+        @keyframes slideInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        /* 背景位移 */
+        @keyframes bgMove {
+        0% { background-position: 0% 0%; }
+        100% { background-position: 100% 100%; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header class="page-header">
+            <div class="header-main"></div>
+               <img src="templates/img/" alt="Logo" class="main-logo"><h1>站点更新日志</h1>
+        </div></header>
+
+    <div class="timeline">
+        {{range.Update_Title}}
+        <div class="timeline-item">
+            <div class="timeline-dot breathing"></div>
+            <div class="timeline-content">
+
+                <div class="meta-info">
+                    <span class="date-badge">{.Date}</span>
+                    <span class="date-badge" style="background: rgba(108, 92, 231, 0.2)">{{.Version}}</span>    
+                </div>
+
+                <div class="card-header">
+                    <img src="{{.Updater}}" alt="icon" class="header-icon">
+                    <h3 class="title">{{.title}}</h3>
+                </div>
+                <ul class="update-list">
+                    {{range.Update_Message}}
+                    <li><strong>{{little_title}}</strong>{{.Info}}</li>
+                    {{end}}
+                </ul>
+            </div>
+        </div>
+        {{end}}
+    </div>
+</body>
+</html>
